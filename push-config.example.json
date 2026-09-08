@@ -1,4 +1,6 @@
 {
   "vapidPublicKey": "",
-  "note": "Paste only the PUBLIC VAPID key. Leave empty or omit this file to keep local Deal REG reminders. Never put the private key here."
+  "note": "Paste only the PUBLIC VAPID key. Leave empty, omit this file, or 404 to keep today's local Deal REG reminders (Notification API + service worker). Never put the private key here. Do not commit a filled push-config.json.",
+  "refresh": "After Enable, this phone stores a PushSubscription (endpoint + p256dh + auth only). The client resubscribes when the public-key hint changes, the subscription expires, or the stored JSON is older than 7 days. Missing keys skip Web Push entirely — local reminders still arm.",
+  "aliases": ["publicKey", "applicationServerKey", "keys.publicKey"]
 }

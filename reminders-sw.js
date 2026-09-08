@@ -74,6 +74,13 @@ const QUEST = [
   "Quest chip is waiting. Sit down.",
 ];
 
+const FELT = [
+  "Jackpot meter is still open. Deal REG.",
+  "You left the felt mid-meter. One more hand.",
+  "Unfinished pull on the felt. Deal REG.",
+  "The meter survived overnight. Sit down.",
+];
+
 const BOSS = [
   "Cold night cooled. Boss hand is optional. Deal REG.",
   "Comeback is on the felt. Deal the boss — or skip.",
@@ -141,6 +148,15 @@ self.addEventListener("push", (event) => {
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil(
     (async () => {
+      try {
+        const oldSub = event.oldSubscription;
+        if (oldSub && self.registration.pushManager) {
+          const opts = oldSub.options || { userVisibleOnly: true };
+          await self.registration.pushManager.subscribe(opts);
+        }
+      } catch {
+        /* page will resubscribe on CPA_DRILL_PUSH_RESUBSCRIBE if a public key exists */
+      }
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of windows) {
         client.postMessage({ type: "CPA_DRILL_PUSH_RESUBSCRIBE" });
@@ -171,6 +187,11 @@ function dealUrl(href) {
   } catch {
     return href;
   }
+}
+
+function namedOrFlavor(plan, at) {
+  if (plan?.itchHint?.body) return plan.itchHint.body;
+  return pickBody(at ?? plan?.at ?? Date.now(), plan?.flavor);
 }
 
 function zonedParts(ms) {
@@ -228,7 +249,9 @@ function pickBody(at, flavor) {
             ? MORNING
             : flavor === "quest"
               ? QUEST
-              : flavor === "boss"
+              : flavor === "felt"
+                ? FELT
+                : flavor === "boss"
                 ? BOSS
                 : flavor === "seed"
                   ? SEED
@@ -318,7 +341,7 @@ async function closeTagged(tag) {
 
 function noteOptions(plan, extra = {}) {
   return {
-    body: plan.body ?? pickBody(plan.at ?? Date.now(), plan.flavor),
+    body: plan.body ?? namedOrFlavor(plan, plan.at ?? Date.now()),
     tag: TAG,
     icon: plan.icon,
     badge: plan.icon,
@@ -365,12 +388,15 @@ async function saveAndArm(data) {
     at,
     lastActiveAt: data.lastActiveAt ?? Date.now(),
     title: data.title ?? "CPA Drill",
-    body: data.body ?? pickBody(at, data.flavor),
+    body: data.body ?? namedOrFlavor(data, at),
     url: dealUrl(data.url ?? self.registration.scope),
     icon: data.icon ?? new URL("icons/icon-192.png", self.registration.scope).href,
     firedAt: null,
     channel: null,
-    flavor: data.flavor ?? null,
+    flavor: data.flavor ?? data.itchHint?.flavor ?? null,
+    itch: data.itch ?? data.itchHint?.flavor ?? null,
+    itchHint: data.itchHint ?? null,
+    areaId: data.areaId ?? data.itchHint?.areaId ?? null,
   };
   await savePlan(plan);
   await closeTagged(TAG);
@@ -431,18 +457,53 @@ async function maybeNotifyFromPlan() {
 async function handlePush(event) {
   let payload = {};
   try {
-    payload = event.data ? await event.data.json() : {};
+    if (event.data && typeof event.data.json === "function") {
+      payload = await event.data.json();
+    }
   } catch {
+    payload = {};
+  }
+  if (!payload || typeof payload !== "object" || !Object.keys(payload).length) {
     try {
-      payload = { body: event.data ? await event.data.text() : "" };
+      const text = event.data && typeof event.data.text === "function" ? await event.data.text() : "";
+      if (text) {
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          payload = { body: text };
+        }
+      }
     } catch {
       payload = {};
     }
   }
   const plan = (await readPlan()) || {};
   const title = payload.title || plan.title || "CPA Drill";
-  const body = payload.body || plan.body || pickBody(Date.now(), plan.flavor);
-  const url = dealUrl(payload.url || payload.data?.url || plan.url || self.registration.scope);
+  const body =
+    payload.body ||
+    payload.itchHint?.body ||
+    plan.body ||
+    namedOrFlavor({ ...plan, itchHint: payload.itchHint || plan.itchHint }, Date.now());
+  let url = payload.url || payload.data?.url || plan.url || self.registration.scope;
+  try {
+    const u = new URL(url, self.registration.scope);
+    u.searchParams.set("deal", "1");
+    const itch = payload.itch || payload.data?.itch || plan.itch || plan.itchHint?.flavor;
+    const area = payload.area || payload.areaId || payload.data?.area || plan.areaId;
+    if (itch) u.searchParams.set("itch", String(itch));
+    if (area) u.searchParams.set("area", String(area));
+    url = u.href;
+  } catch {
+    url = dealUrl(url);
+  }
   const icon = payload.icon || plan.icon || new URL("icons/icon-192.png", self.registration.scope).href;
-  await showTagged(title, noteOptions({ ...plan, title, body, url, icon }));
+  try {
+    await showTagged(title, noteOptions({ ...plan, title, body, url, icon }));
+  } catch {
+    try {
+      await self.registration.showNotification(title, { body, icon, data: { url, action: "deal" } });
+    } catch {
+      /* local Notification path still works when the page is alive */
+    }
+  }
 }
