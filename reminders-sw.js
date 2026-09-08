@@ -42,6 +42,20 @@ const LEFTOVER = [
   "Finish tonight’s table. Deal REG.",
 ];
 
+const WARM = [
+  "Table still warm. Deal REG.",
+  "The felt is still hot. Sit back down.",
+  "You left chips on the table. Deal REG.",
+  "Ninety minutes. Leftover hands still on the felt. Deal REG.",
+  "Chair’s still warm. One more hand.",
+];
+
+const BOSS = [
+  "Cold night cooled. Boss hand is optional. Deal REG.",
+  "Comeback is on the felt. Deal the boss — or skip.",
+  "Boss ladder’s open. One stretch pull. Deal REG.",
+];
+
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
 });
@@ -54,9 +68,11 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const action = event.action || "deal";
+  if (action === "dismiss" || action === "close") return;
   const scope = self.registration.scope;
-  const target = event.notification?.data?.url || scope;
-  event.waitUntil(openDealTarget(target));
+  const raw = event.notification?.data?.url || scope;
+  event.waitUntil(openDealTarget(raw));
 });
 
 self.addEventListener("periodicsync", (event) => {
@@ -101,7 +117,7 @@ self.addEventListener("message", (event) => {
 function dealUrl(href) {
   try {
     const u = new URL(href, self.registration.scope);
-    if (!u.searchParams.get("deal")) u.searchParams.set("deal", "1");
+    u.searchParams.set("deal", "1");
     return u.href;
   } catch {
     return href;
@@ -152,8 +168,13 @@ function zonedLocalToUtc({ year, month, day, hour = 0, minute = 0, second = 0 })
 }
 
 function pickBody(at, flavor) {
-  const list = flavor === "leftover" ? LEFTOVER : BODIES;
-  const i = Math.abs(Math.floor(Number(at || Date.now()) / 3_600_000)) % list.length;
+  const list = flavor === "warm" ? WARM : flavor === "leftover" ? LEFTOVER : flavor === "boss" ? BOSS : BODIES;
+  const ms = Number(at || Date.now());
+  const p = zonedParts(ms);
+  const day = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+  let salt = 0;
+  for (let i = 0; i < day.length; i += 1) salt = (salt * 33 + day.charCodeAt(i)) | 0;
+  const i = Math.abs(Math.floor(ms / 3_600_000) + Math.abs(salt)) % list.length;
   return list[i];
 }
 
@@ -174,27 +195,26 @@ function inQuiet(ms) {
 }
 
 async function openDealTarget(target) {
+  const url = dealUrl(target);
   const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   for (const client of windows) {
     if (client.url && client.url.startsWith(self.registration.scope)) {
       try {
-        client.postMessage({ type: "CPA_DRILL_OPEN", url: target });
+        client.postMessage({ type: "CPA_DRILL_OPEN", url });
       } catch {
         /* ignore */
       }
-      if ("focus" in client) {
+      if (typeof client.navigate === "function") {
         try {
-          if (typeof client.navigate === "function" && client.url.split("?")[0] !== String(target).split("?")[0]) {
-            await client.navigate(target);
-          }
+          await client.navigate(url);
         } catch {
           /* navigate is optional */
         }
-        return client.focus();
       }
+      if ("focus" in client) return client.focus();
     }
   }
-  if (self.clients.openWindow) return self.clients.openWindow(target);
+  if (self.clients.openWindow) return self.clients.openWindow(url);
   return undefined;
 }
 
@@ -238,10 +258,13 @@ function noteOptions(plan, extra = {}) {
     tag: TAG,
     icon: plan.icon,
     badge: plan.icon,
-    data: { url: plan.url ?? dealUrl(self.registration.scope) },
+    data: { url: dealUrl(plan.url ?? self.registration.scope), action: "deal" },
     renotify: true,
     vibrate: [80, 40, 80],
-    actions: [{ action: "deal", title: "Deal REG" }],
+    actions: [
+      { action: "deal", title: "Deal REG" },
+      { action: "dismiss", title: "Later" },
+    ],
     ...extra,
   };
 }
@@ -262,7 +285,7 @@ async function saveAndArm(data) {
     lastActiveAt: data.lastActiveAt ?? Date.now(),
     title: data.title ?? "CPA Drill",
     body: data.body ?? pickBody(at, data.flavor),
-    url: data.url ?? dealUrl(self.registration.scope),
+    url: dealUrl(data.url ?? self.registration.scope),
     icon: data.icon ?? new URL("icons/icon-192.png", self.registration.scope).href,
     firedAt: null,
     channel: null,
@@ -335,7 +358,7 @@ async function handlePush(event) {
   const plan = (await readPlan()) || {};
   const title = payload.title || plan.title || "CPA Drill";
   const body = payload.body || plan.body || pickBody(Date.now(), plan.flavor);
-  const url = payload.url || payload.data?.url || plan.url || dealUrl(self.registration.scope);
+  const url = dealUrl(payload.url || payload.data?.url || plan.url || self.registration.scope);
   const icon = payload.icon || plan.icon || new URL("icons/icon-192.png", self.registration.scope).href;
   await showTagged(title, noteOptions({ ...plan, title, body, url, icon }));
 }
