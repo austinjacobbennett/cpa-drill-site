@@ -11,6 +11,7 @@ const MIN_GAP_MS = 3 * 60 * 60 * 1000;
 const QUIET_START = 22;
 const QUIET_END = 7;
 const WAKE_HOUR = 8;
+const ET_TZ = "America/New_York";
 
 const BODIES = [
   "Deal REG. The next pull is waiting.",
@@ -21,6 +22,14 @@ const BODIES = [
   "The code did not move. You can. Deal REG.",
   "Quiet hours are over. Deal REG.",
   "Stay in the chair tomorrow. Deal REG tonight’s leftover.",
+  "Yesterday’s rung is still warm. Deal REG.",
+  "The map does not fill itself. Deal REG.",
+  "Twenty hours. The next statute is yours.",
+  "Come back colder or come back. Deal REG.",
+  "Level bar is waiting. One productive pull.",
+  "Study tone, not a streak app. Deal REG.",
+  "The climb from last sit is still on the table.",
+  "Sit down. One hand. Then another.",
 ];
 
 self.addEventListener("install", (event) => {
@@ -94,19 +103,45 @@ function pickBody(at) {
   return BODIES[i];
 }
 
+function etParts(ms) {
+  try {
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: ET_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+    });
+    const map = {};
+    for (const part of dtf.formatToParts(new Date(ms))) {
+      if (part.type !== "literal") map[part.type] = part.value;
+    }
+    return {
+      year: Number(map.year),
+      month: Number(map.month),
+      day: Number(map.day),
+      hour: Number(map.hour),
+    };
+  } catch {
+    const d = new Date(ms);
+    return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours() };
+  }
+}
+
+function eightAmEt(ms, dayOffset) {
+  const p = etParts(ms);
+  const wanted = Date.UTC(p.year, p.month - 1, p.day + dayOffset, WAKE_HOUR, 0, 0);
+  const shown = etParts(wanted);
+  const asUtc = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, 0, 0);
+  return wanted - (asUtc - wanted);
+}
+
 function bumpQuiet(ms) {
-  const d = new Date(ms);
-  const hour = d.getHours();
-  if (hour >= QUIET_START) {
-    d.setDate(d.getDate() + 1);
-    d.setHours(WAKE_HOUR, 0, 0, 0);
-    return d.getTime();
-  }
-  if (hour < QUIET_END) {
-    d.setHours(WAKE_HOUR, 0, 0, 0);
-    return d.getTime();
-  }
-  return d.getTime();
+  const hour = etParts(ms).hour;
+  if (hour >= QUIET_START) return eightAmEt(ms, 1);
+  if (hour < QUIET_END) return eightAmEt(ms, 0);
+  return ms;
 }
 
 async function openDealTarget(target) {
