@@ -1,8 +1,8 @@
 /* global TimestampTrigger */
 /* CPA Drill local re-engagement. Loaded by the generated service worker.
- * Quiet hours are America/New_York (10pm–7am ET, wake 8am ET) — keep in
- * sync with src/core/reminders.js. No private keys. Optional `push` is a
- * client overlay when VAPID is present.
+ * Quiet hours are America/New_York (10pm–7am ET, wake 8am ET weekdays /
+ * 9am ET weekends) — keep in sync with src/core/reminders.js. No private
+ * keys. Optional `push` is a client overlay when VAPID is present.
  */
 
 const PLAN_URL = "https://cpa-drill.local/reminder-plan";
@@ -13,6 +13,7 @@ const MIN_GAP_MS = 3 * 60 * 60 * 1000;
 const QUIET_START = 22;
 const QUIET_END = 7;
 const WAKE_HOUR = 8;
+const WEEKEND_WAKE = 9;
 const ET = "America/New_York";
 
 const BODIES = [
@@ -123,6 +124,20 @@ const EVENING = [
   "Evening chair time. Deal REG.",
 ];
 
+const ALMOST = [
+  "Almost paid. One more hand. Deal REG.",
+  "The reel almost lined up. Deal REG.",
+  "One cell from cracking. Deal REG.",
+  "Unpaid quest · one more. Deal REG.",
+];
+
+const COMEBACK = [
+  "Stumble cooled. Table still warm. Deal REG.",
+  "The felt didn't dump. Deal REG.",
+  "Softer chrome. Same ladder. Deal REG.",
+  "Chips still on the table. Sit down.",
+];
+
 let firing = false;
 
 self.addEventListener("install", (event) => {
@@ -195,6 +210,23 @@ self.addEventListener("message", (event) => {
   }
 });
 
+const SAFE_ITCH = new Set([
+  "table",
+  "quest",
+  "seed",
+  "boss",
+  "morning",
+  "beat",
+  "streak",
+  "evening",
+  "felt",
+  "hold",
+  "cold",
+  "comeback",
+  "code",
+]);
+const SAFE_AREA = /^REG-[IVX]+$/;
+
 function dealUrl(href) {
   try {
     const u = new URL(href, self.registration.scope);
@@ -219,6 +251,7 @@ function zonedParts(ms) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    weekday: "short",
     hourCycle: "h23",
   });
   const map = {};
@@ -232,6 +265,7 @@ function zonedParts(ms) {
     hour: Number(map.hour),
     minute: Number(map.minute),
     second: Number(map.second),
+    weekday: map.weekday ?? "",
   };
 }
 
@@ -279,6 +313,10 @@ function pickBody(at, flavor) {
                           ? BEAT
                           : flavor === "evening"
                             ? EVENING
+                            : flavor === "almost"
+                              ? ALMOST
+                              : flavor === "comeback"
+                                ? COMEBACK
                             : BODIES;
   const ms = Number(at || Date.now());
   const p = zonedParts(ms);
@@ -291,13 +329,15 @@ function pickBody(at, flavor) {
 
 function bumpQuiet(ms) {
   const p = zonedParts(ms);
-  if (p.hour >= QUIET_START) {
-    return zonedLocalToUtc({ year: p.year, month: p.month, day: p.day + 1, hour: WAKE_HOUR });
-  }
-  if (p.hour < QUIET_END) {
-    return zonedLocalToUtc({ year: p.year, month: p.month, day: p.day, hour: WAKE_HOUR });
-  }
-  return ms;
+  let dayOffset = 0;
+  if (p.hour >= QUIET_START) dayOffset = 1;
+  else if (p.hour < QUIET_END) dayOffset = 0;
+  else return ms;
+  const noon = zonedLocalToUtc({ year: p.year, month: p.month, day: p.day + dayOffset, hour: 12 });
+  const t = zonedParts(noon);
+  const weekend = t.weekday === "Sat" || t.weekday === "Sun";
+  const hour = weekend ? WEEKEND_WAKE : WAKE_HOUR;
+  return zonedLocalToUtc({ year: t.year, month: t.month, day: t.day, hour });
 }
 
 function inQuiet(ms) {
@@ -546,10 +586,15 @@ async function handlePush(event) {
   try {
     const u = new URL(url, self.registration.scope);
     u.searchParams.set("deal", "1");
-    const itch = payload.itch || payload.data?.itch || plan.itch || plan.itchHint?.flavor;
+    const rawItch = payload.itch || payload.data?.itch || plan.itch || plan.itchHint?.flavor;
+    const itch = SAFE_ITCH.has(String(rawItch))
+      ? String(rawItch)
+      : String(rawItch) === "almost"
+        ? "seed"
+        : "";
     const area = payload.area || payload.areaId || payload.data?.area || plan.areaId;
-    if (itch) u.searchParams.set("itch", String(itch));
-    if (area) u.searchParams.set("area", String(area));
+    if (itch) u.searchParams.set("itch", itch);
+    if (area && SAFE_AREA.test(String(area))) u.searchParams.set("area", String(area));
     url = u.href;
   } catch {
     url = dealUrl(url);
