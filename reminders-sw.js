@@ -81,6 +81,20 @@ const FELT = [
   "The meter survived overnight. Sit down.",
 ];
 
+const HOLD = [
+  "Hold is still armed. Deal REG.",
+  "Combo hold is on the felt. Sit down.",
+  "The next near-break keeps the heat. Deal REG.",
+  "Streak hold is unpaid. Deal REG.",
+];
+
+const COLD = [
+  "Unfinished hand. Deal REG.",
+  "You left mid-hand. The code is still on the felt.",
+  "The table waited. One more hand.",
+  "Six hours. Same statute. Deal REG.",
+];
+
 const BOSS = [
   "Cold night cooled. Boss hand is optional. Deal REG.",
   "Comeback is on the felt. Deal the boss — or skip.",
@@ -108,6 +122,8 @@ const EVENING = [
   "Night table. One productive pull.",
   "Evening chair time. Deal REG.",
 ];
+
+let firing = false;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -251,15 +267,19 @@ function pickBody(at, flavor) {
               ? QUEST
               : flavor === "felt"
                 ? FELT
-                : flavor === "boss"
-                ? BOSS
-                : flavor === "seed"
-                  ? SEED
-                  : flavor === "beat"
-                    ? BEAT
-                    : flavor === "evening"
-                      ? EVENING
-                      : BODIES;
+                : flavor === "hold"
+                  ? HOLD
+                  : flavor === "cold"
+                    ? COLD
+                    : flavor === "boss"
+                      ? BOSS
+                      : flavor === "seed"
+                        ? SEED
+                        : flavor === "beat"
+                          ? BEAT
+                          : flavor === "evening"
+                            ? EVENING
+                            : BODIES;
   const ms = Number(at || Date.now());
   const p = zonedParts(ms);
   const day = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
@@ -339,13 +359,18 @@ async function closeTagged(tag) {
   }
 }
 
+function noteTriggerAt(note) {
+  const trigger = note?.showTrigger?.timestamp ?? note?.showTrigger ?? note?.data?.at;
+  return Number(trigger);
+}
+
 function noteOptions(plan, extra = {}) {
   return {
     body: plan.body ?? namedOrFlavor(plan, plan.at ?? Date.now()),
     tag: TAG,
     icon: plan.icon,
     badge: plan.icon,
-    data: { url: dealUrl(plan.url ?? self.registration.scope), action: "deal" },
+    data: { url: dealUrl(plan.url ?? self.registration.scope), action: "deal", at: plan.at ?? null },
     renotify: true,
     vibrate: [80, 40, 80],
     actions: [
@@ -370,7 +395,9 @@ async function armTimestamp(plan) {
   if (!Number.isFinite(plan?.at) || plan.at <= Date.now()) return false;
   try {
     const notes = await self.registration.getNotifications({ tag: TAG });
-    if (notes.length > 0) return false;
+    const matching = notes.some((n) => noteTriggerAt(n) === Number(plan.at));
+    if (matching) return true;
+    if (notes.length) await closeTagged(TAG);
     await showTagged(plan.title ?? "CPA Drill", noteOptions(plan, { showTrigger: new TimestampTrigger(plan.at) }));
     if (plan.channel !== "timestamp") {
       plan.channel = "timestamp";
@@ -397,6 +424,7 @@ async function saveAndArm(data) {
     itch: data.itch ?? data.itchHint?.flavor ?? null,
     itchHint: data.itchHint ?? null,
     areaId: data.areaId ?? data.itchHint?.areaId ?? null,
+    lastFiredAt: data.lastFiredAt ?? null,
   };
   await savePlan(plan);
   await closeTagged(TAG);
@@ -417,41 +445,71 @@ async function showDeal(plan) {
 
 async function markFired(plan, now) {
   plan.firedAt = now;
+  plan.lastFiredAt = now;
   plan.at = bumpQuiet(now + AFTER_MS);
   plan.lastActiveAt = now;
   plan.channel = null;
   await savePlan(plan);
 }
 
-async function maybeNotifyFromPlan() {
-  const plan = await readPlan();
-  if (!plan || !Number.isFinite(plan.at)) return;
-  const now = Date.now();
-  if (now < plan.at) {
-    await armTimestamp(plan);
-    return;
-  }
-  if (plan.firedAt != null && Number(plan.firedAt) >= Number(plan.at) - 1) return;
-  if (now - (plan.lastActiveAt ?? 0) < MIN_GAP_MS) return;
-  if (inQuiet(now)) {
-    plan.at = bumpQuiet(now);
-    await savePlan(plan);
-    return;
-  }
-  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  const visible = windows.some((c) => c.visibilityState === "visible");
-  if (visible) return;
-  let alreadyShowing = false;
+async function askClientsForPlan() {
   try {
-    const notes = await self.registration.getNotifications({ tag: TAG });
-    alreadyShowing = notes.length > 0;
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of windows) {
+      try {
+        client.postMessage({ type: "CPA_DRILL_NEED_PLAN" });
+      } catch {
+        /* ignore */
+      }
+    }
   } catch {
-    alreadyShowing = false;
+    /* ignore */
   }
-  if (!alreadyShowing) {
-    await showDeal(plan);
+}
+
+async function maybeNotifyFromPlan() {
+  if (firing) return;
+  firing = true;
+  try {
+    const plan = await readPlan();
+    if (!plan || !Number.isFinite(plan.at)) {
+      await askClientsForPlan();
+      return;
+    }
+    const now = Date.now();
+    if (now < plan.at) {
+      await armTimestamp(plan);
+      return;
+    }
+    if (plan.firedAt != null && Number(plan.firedAt) >= Number(plan.at) - 1) return;
+    if (now - (plan.lastActiveAt ?? 0) < MIN_GAP_MS) return;
+    if (Number(plan.lastFiredAt) > 0 && now - Number(plan.lastFiredAt) < MIN_GAP_MS) return;
+    if (inQuiet(now)) {
+      plan.at = bumpQuiet(now);
+      await savePlan(plan);
+      return;
+    }
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const visible = windows.some((c) => c.visibilityState === "visible");
+    if (visible) return;
+    let alreadyShowing = false;
+    try {
+      const notes = await self.registration.getNotifications({ tag: TAG });
+      alreadyShowing = notes.some((n) => {
+        const triggerAt = noteTriggerAt(n);
+        return !Number.isFinite(triggerAt) || triggerAt <= now;
+      });
+      if (!alreadyShowing && notes.length) await closeTagged(TAG);
+    } catch {
+      alreadyShowing = false;
+    }
+    if (!alreadyShowing) {
+      await showDeal(plan);
+    }
+    await markFired(plan, now);
+  } finally {
+    firing = false;
   }
-  await markFired(plan, now);
 }
 
 async function handlePush(event) {
