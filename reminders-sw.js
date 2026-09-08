@@ -64,6 +64,7 @@ const MORNING = [
   "Morning Deal REG. Same Elo. Warm the chair.",
   "The table opened at 7am ET. Deal REG.",
   "First pull of the morning. Deal REG.",
+  "8–10am window. First pull is waiting.",
 ];
 
 const QUEST = [
@@ -77,6 +78,28 @@ const BOSS = [
   "Cold night cooled. Boss hand is optional. Deal REG.",
   "Comeback is on the felt. Deal the boss — or skip.",
   "Boss ladder’s open. One stretch pull. Deal REG.",
+];
+
+const SEED = [
+  "Hex cells still dark. Deal REG.",
+  "The seed map is unpaid. Light a cell.",
+  "Chase the hex layer. Deal REG.",
+  "Unfilled pairings on this seed. Deal REG.",
+  "Crack the map. Same code. Deal REG.",
+];
+
+const BEAT = [
+  "Beat yesterday’s morning. Deal REG.",
+  "Yesterday’s climb is the mark. Deal REG.",
+  "Morning board is unpaid. Deal REG.",
+  "Stay ahead of yesterday-self. Deal REG.",
+];
+
+const EVENING = [
+  "Evening REG. The table is open.",
+  "Five to nine. Deal REG.",
+  "Night table. One productive pull.",
+  "Evening chair time. Deal REG.",
 ];
 
 self.addEventListener("install", (event) => {
@@ -207,7 +230,13 @@ function pickBody(at, flavor) {
               ? QUEST
               : flavor === "boss"
                 ? BOSS
-                : BODIES;
+                : flavor === "seed"
+                  ? SEED
+                  : flavor === "beat"
+                    ? BEAT
+                    : flavor === "evening"
+                      ? EVENING
+                      : BODIES;
   const ms = Number(at || Date.now());
   const p = zonedParts(ms);
   const day = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
