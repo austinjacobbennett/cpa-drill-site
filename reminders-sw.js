@@ -32,6 +32,8 @@ const BODIES = [
   "Study tone, not a streak app. Deal REG.",
   "The climb from last sit is still on the table.",
   "Sit down. One hand. Then another.",
+  "The table is waiting. One productive pull.",
+  "Same code. Fresh hand. Deal REG.",
 ];
 
 const LEFTOVER = [
@@ -48,6 +50,27 @@ const WARM = [
   "You left chips on the table. Deal REG.",
   "Ninety minutes. Leftover hands still on the felt. Deal REG.",
   "Chair’s still warm. One more hand.",
+];
+
+const STREAK = [
+  "Return streak is on the felt. Deal REG.",
+  "Today’s pip is still dark. Deal REG.",
+  "Keep the chair-time streak. One pull.",
+  "Yesterday counted. Sit down. Deal REG.",
+];
+
+const MORNING = [
+  "Quiet hours are over. First pull is waiting.",
+  "Morning Deal REG. Same Elo. Warm the chair.",
+  "The table opened at 7am ET. Deal REG.",
+  "First pull of the morning. Deal REG.",
+];
+
+const QUEST = [
+  "Daily REG quest is unpaid. Deal REG.",
+  "Today’s area quest is still on the felt.",
+  "Three hands to clear the daily quest. Deal REG.",
+  "Quest chip is waiting. Sit down.",
 ];
 
 const BOSS = [
@@ -68,11 +91,14 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const action = event.action || "deal";
+  const action = event.action || "";
   if (action === "dismiss" || action === "close") return;
+  const dataAction = event.notification?.data?.action;
+  const wantsDeal =
+    action === "deal" || dataAction === "deal" || (!action && dataAction !== "enabled");
   const scope = self.registration.scope;
   const raw = event.notification?.data?.url || scope;
-  event.waitUntil(openDealTarget(raw));
+  event.waitUntil(openDealTarget(raw, wantsDeal));
 });
 
 self.addEventListener("periodicsync", (event) => {
@@ -168,7 +194,20 @@ function zonedLocalToUtc({ year, month, day, hour = 0, minute = 0, second = 0 })
 }
 
 function pickBody(at, flavor) {
-  const list = flavor === "warm" ? WARM : flavor === "leftover" ? LEFTOVER : flavor === "boss" ? BOSS : BODIES;
+  const list =
+    flavor === "warm"
+      ? WARM
+      : flavor === "leftover"
+        ? LEFTOVER
+        : flavor === "streak"
+          ? STREAK
+          : flavor === "morning"
+            ? MORNING
+            : flavor === "quest"
+              ? QUEST
+              : flavor === "boss"
+                ? BOSS
+                : BODIES;
   const ms = Number(at || Date.now());
   const p = zonedParts(ms);
   const day = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
@@ -194,22 +233,18 @@ function inQuiet(ms) {
   return hour >= QUIET_START || hour < QUIET_END;
 }
 
-async function openDealTarget(target) {
-  const url = dealUrl(target);
+async function openDealTarget(target, forceDeal = true) {
+  const url = forceDeal ? dealUrl(target) : target;
   const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   for (const client of windows) {
     if (client.url && client.url.startsWith(self.registration.scope)) {
       try {
-        client.postMessage({ type: "CPA_DRILL_OPEN", url });
+        client.postMessage({
+          type: forceDeal ? "CPA_DRILL_OPEN" : "CPA_DRILL_FOCUS",
+          url,
+        });
       } catch {
         /* ignore */
-      }
-      if (typeof client.navigate === "function") {
-        try {
-          await client.navigate(url);
-        } catch {
-          /* navigate is optional */
-        }
       }
       if ("focus" in client) return client.focus();
     }
@@ -278,6 +313,23 @@ async function showTagged(title, options) {
   }
 }
 
+async function armTimestamp(plan) {
+  if (typeof TimestampTrigger !== "function") return false;
+  if (!Number.isFinite(plan?.at) || plan.at <= Date.now()) return false;
+  try {
+    const notes = await self.registration.getNotifications({ tag: TAG });
+    if (notes.length > 0) return false;
+    await showTagged(plan.title ?? "CPA Drill", noteOptions(plan, { showTrigger: new TimestampTrigger(plan.at) }));
+    if (plan.channel !== "timestamp") {
+      plan.channel = "timestamp";
+      await savePlan(plan);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function saveAndArm(data) {
   const at = data.at;
   const plan = {
@@ -320,7 +372,10 @@ async function maybeNotifyFromPlan() {
   const plan = await readPlan();
   if (!plan || !Number.isFinite(plan.at)) return;
   const now = Date.now();
-  if (now < plan.at) return;
+  if (now < plan.at) {
+    await armTimestamp(plan);
+    return;
+  }
   if (plan.firedAt != null && Number(plan.firedAt) >= Number(plan.at) - 1) return;
   if (now - (plan.lastActiveAt ?? 0) < MIN_GAP_MS) return;
   if (inQuiet(now)) {

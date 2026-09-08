@@ -1,3 +1,4 @@
 {
-  "vapidPublicKey": ""
+  "vapidPublicKey": "",
+  "note": "Paste only the PUBLIC VAPID key. Leave empty or omit this file to keep local Deal REG reminders. Never put the private key here."
 }
